@@ -29,6 +29,7 @@ fn decrypt_aes(encrypted_data: &[u8], key: &[u8; 16], iv: &[u8; 16]) -> Result<V
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    println!("Legacy MSD extractor tool");
     let args: Vec<String> = env::args().collect();
     if args.len() != 3 {
         eprintln!("Usage: {} <filename> <output_folder>", args[0]);
@@ -41,10 +42,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let output_folder = &args[2];
 
     let mut magic = [0u8; 6];
-    file.read_exact(&mut magic)?;
-    
+    file.read_exact(&mut magic)?; 
     if &magic != b"MSDU10" {
-        eprintln!("error: invalid magic value!!");
+        eprintln!("Error: Not a valid MSD file!");
         std::process::exit(1);
     }
     
@@ -79,10 +79,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     //read TOC entry
-    let mut toc_index_bytes = [0u8; 4];
-    file.read_exact(&mut toc_index_bytes)?;
-    let toc_index = u32::from_le_bytes(toc_index_bytes);
-    assert!(toc_index == 0, "invalid TOC entry!");
+    let mut toc_entry_bytes = [0u8; 4];
+    file.read_exact(&mut toc_entry_bytes)?;
+    let toc_entry = u32::from_le_bytes(toc_entry_bytes);
+    assert!(toc_entry == 0, "invalid TOC entry!");
 
     // 4 bytes index
     let mut toc_index_bytes = [0u8; 4];
@@ -161,6 +161,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if n != 1 { //isnt on first segment
             toc_reader.seek(SeekFrom::Current(4))?; //some magic?
         }
+
         let mut segment_length_bytes = [0u8; 4];
         toc_reader.read_exact(&mut segment_length_bytes)?;
         let segment_length = u32::from_be_bytes(segment_length_bytes);
@@ -170,17 +171,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let segment_size = u32::from_be_bytes(segment_size_bytes);
 
         if segment_size != 0 {
+            assert!(segment_size == sections[n - 1].size, "size in TOC does not match size from header!");
+
             toc_reader.seek(SeekFrom::Current(26))?; //unknown now
+
             let mut name_length_byte = [0u8; 1];
             toc_reader.read_exact(&mut name_length_byte)?;
             let name_length = u8::from_be_bytes(name_length_byte);
+
             let mut name_bytes = vec![0u8; name_length as usize];
             toc_reader.read_exact(&mut name_bytes)?;
             let name = String::from_utf8(name_bytes)?;
 
             //println!("Segment: name='{}', length={}, size={}", name, segment_length, segment_size);
             // apply respective names to sections
-            if n != 1 && sections[n-2].name == name{
+            if n != 1 && sections[n-2].name == name{ //second section with the same name is some sort of signature
                 sections[n-1].name = name + "_sign";
             } else {
                 sections[n-1].name = name;
@@ -192,28 +197,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         } else {
             break; //0 sized segment is end
         }
-
     }
 
     println!();
 
     for (_i, section) in sections.iter().enumerate() {
-        println!("Extracting section {}: {}", section.index, section.name);
+        println!("Extracting section {}: {}...", section.index, section.name);
+
+        let mut out_data: Vec<u8>;
 
         if section.name.ends_with("_sign") {
             //unknown format
             file.seek(SeekFrom::Start(section.offset as u64))?;
-            let mut encrypted_data = vec![0u8; section.size as usize];
-            file.read_exact(&mut encrypted_data)?;
-
-            std::fs::create_dir_all(output_folder)?;
-            let output_path = Path::new(output_folder).join(&section.name);
-            let mut out_file = OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .open(&output_path)?;
-            out_file.write_all(&encrypted_data)?;
+            out_data = vec![0u8; section.size as usize];
+            file.read_exact(&mut out_data)?;
+            
         } else { 
             file.seek(SeekFrom::Start(section.offset as u64 + 136))?; // skip signature
             let mut encrypted_data = vec![0u8; section.size as usize - 136];
@@ -232,22 +230,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             iv.extend_from_slice(&salt);
             let iv_md5 = md5::compute(&iv);
 
-            let decrypted_data = decrypt_aes(&encrypted_data[16..], &key_md5, &iv_md5)?;
-
-            std::fs::create_dir_all(output_folder)?;
-            let output_path = Path::new(output_folder).join(&section.name);
-            let mut out_file = OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .open(&output_path)?;
-            out_file.write_all(&decrypted_data)?;
+            out_data = decrypt_aes(&encrypted_data[16..], &key_md5, &iv_md5)?;
         }
+
+        std::fs::create_dir_all(output_folder)?;
+        let output_path = Path::new(output_folder).join(&section.name);
+        let mut out_file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&output_path)?;
+        out_file.write_all(&out_data)?;
 
     }
 
     println!();
-    println!("Done.");
+    println!("Done! Saved extracted files to '{}'", output_folder);
 
     Ok(())
 }
