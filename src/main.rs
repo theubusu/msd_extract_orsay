@@ -75,7 +75,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let size = u32::from_le_bytes(size_bytes);
 
         println!("Section {}: offset: {}, size: {}", index, offset, size);
-        sections.push(Section { index, offset, size , name: "aaa".to_string() });
+        sections.push(Section { index, offset, size , name: "".to_string() });
     }
 
     //read TOC entry
