@@ -1,12 +1,22 @@
-use std::env;
 use std::path::{Path};
 use std::fs::{File, OpenOptions};
 use std::io:: {Write, Read, Seek, SeekFrom, Cursor};
 
+use clap::Parser;
 use aes::Aes128;
 use cbc::{Decryptor, cipher::{block_padding::Pkcs7, BlockDecryptMut, KeyIvInit}};
 
 type Aes128CbcDec = Decryptor<Aes128>;
+
+#[derive(Parser, Debug)]
+struct Args {
+    /// Keep signature files
+    #[arg(short = 's')]
+    keep_sign: bool,
+
+    input_file: String,
+    output_folder: String,
+}
 
 static KEYS: &[(&str, &str)] = &[
     ("T-NT14M", "95d01e0bae861a05695bc8a6edb2ea835a09accd"),
@@ -30,16 +40,18 @@ fn decrypt_aes(encrypted_data: &[u8], key: &[u8; 16], iv: &[u8; 16]) -> Result<V
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Legacy MSD extractor tool");
-    let args: Vec<String> = env::args().collect();
-    if args.len() != 3 {
-        eprintln!("Usage: {} <filename> <output_folder>", args[0]);
-        std::process::exit(1);
-    }
+    let args = Args::parse();
+    println!();
 
-    let filename = &args[1];
+    let filename = args.input_file;
+    println!("Input file: {}", filename);
     let mut file = File::open(filename)?;
 
-    let output_folder = &args[2];
+    let output_folder = args.output_folder;
+    println!("Output folder: {}", output_folder);
+    println!();
+
+    let keep_sign = args.keep_sign;
 
     let mut magic = [0u8; 6];
     file.read_exact(&mut magic)?; 
@@ -53,7 +65,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let section_count = u32::from_le_bytes(section_count_bytes);
     
     println!("Number of sections: {}", section_count);
-    println!();
 
     let mut sections: Vec<Section> = Vec::new();
 
@@ -208,10 +219,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         if section.name.ends_with("_sign") {
             //unknown format
-            file.seek(SeekFrom::Start(section.offset as u64))?;
-            out_data = vec![0u8; section.size as usize];
-            file.read_exact(&mut out_data)?;
-            
+            if keep_sign {
+                file.seek(SeekFrom::Start(section.offset as u64))?;
+                out_data = vec![0u8; section.size as usize];
+                file.read_exact(&mut out_data)?;
+            } else {
+                println!("- Skipping signature file");
+                continue;
+            }      
         } else { 
             file.seek(SeekFrom::Start(section.offset as u64 + 136))?; // skip signature
             let mut encrypted_data = vec![0u8; section.size as usize - 136];
@@ -233,8 +248,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             out_data = decrypt_aes(&encrypted_data[16..], &key_md5, &iv_md5)?;
         }
 
-        std::fs::create_dir_all(output_folder)?;
-        let output_path = Path::new(output_folder).join(&section.name);
+        std::fs::create_dir_all(&output_folder)?;
+        let output_path = Path::new(&output_folder).join(&section.name);
         let mut out_file = OpenOptions::new()
             .write(true)
             .create(true)
